@@ -1,0 +1,142 @@
+//Test Program 1 for PowerControl Board (H-bridge drive tests forward/reverse, multiple PWM) (PIC16F18855)
+
+#include <xc.h>
+#include <stdint.h>
+
+#pragma config FEXTOSC  = OFF
+#pragma config RSTOSC   = HFINT32
+#pragma config CLKOUTEN = OFF
+#pragma config CSWEN    = OFF
+#pragma config FCMEN    = OFF
+#pragma config MCLRE    = ON
+#pragma config PWRTE    = ON
+#pragma config LPBOREN  = OFF
+#pragma config BOREN    = ON
+#pragma config BORV     = LO
+#pragma config ZCD      = OFF
+#pragma config PPS1WAY  = OFF
+#pragma config STVREN   = ON
+#pragma config DEBUG    = OFF
+#pragma config WDTCPS   = WDTCPS_31
+#pragma config WDTE     = OFF
+#pragma config WDTCWS   = WDTCWS_7
+#pragma config WDTCCS   = SC
+#pragma config WRT      = OFF
+#pragma config SCANE    = available
+#pragma config LVP      = OFF
+
+#pragma config CP       = OFF
+#pragma config CPD      = OFF
+
+#define _XTAL_FREQ 32000000UL
+
+
+// PWM frequency:20khz
+#define PWM_PR2_VALUE   199U
+
+#define DUTY_50_PERCENT  400U
+#define DUTY_25_PERCENT  200U
+#define DUTY_0_PERCENT     0U
+
+//pps unlock/lock
+static void pps_unlock(void)
+{
+    PPSLOCK = 0x55;
+    PPSLOCK = 0xAA;
+    PPSLOCKbits.PPSLOCKED = 0;
+}
+static void pps_lock(void)
+{
+    PPSLOCK = 0x55;
+    PPSLOCK = 0xAA;
+    PPSLOCKbits.PPSLOCKED = 1;
+}
+
+// SET CCP1 DUTY (left sided pwm)
+static void ccp1_set_duty(uint16_t duty10)
+{
+    uint16_t max_duty = (uint16_t)(4U * (PWM_PR2_VALUE + 1U));
+    if (duty10 > max_duty)
+    {
+        duty10 = max_duty;
+    }
+    CCPR1H = (uint8_t)(duty10 >> 2);
+    CCPR1L = (uint8_t)((duty10 & 0x0003U) << 6);
+}
+
+
+void main(void)
+{
+    OSCFRQbits.HFFRQ = 0b110;
+
+    //disable analague in on c3 and c4
+    ANSELCbits.ANSC3 = 0;
+    ANSELCbits.ANSC4 = 0;
+
+    //set rc3 as digital output
+    TRISCbits.TRISC3 = 0;
+
+    pps_unlock();
+    RC3PPS = 0x00;      // normal LATC on RC3
+    pps_lock();
+
+    // uncomment 1 for rev, 0 for forward motor drive
+    LATCbits.LATC3 = 1;   // RC3 high
+    //LATCbits.LATC3 = 0; // RC3 low
+
+    // RC4 = CCP1 PWM output
+
+    TRISCbits.TRISC4 = 1;   // keep pin disabled during setup
+
+    pps_unlock();
+    RC4PPS = 0x09;          // CCP1 output -> RC4
+    pps_lock();
+
+    // Timer2 setup for PWM time base
+    // Timer used for CCP1 PWM must use FOSC/4
+    T2CLKCON = 0x01;   // FOSC/4
+    T2HLT    = 0x00;   // Free-running mode
+    T2RST    = 0x00;   // No reset source
+    T2PR     = PWM_PR2_VALUE;
+
+    // T2CON:
+    // bit 7 = ON
+    // bits 6:4 = CKPS = 001 => 1:2 prescaler
+    // bits 3:0 = OUTPS = 0000 => 1:1 postscaler
+    T2CON = 0x10;      // Timer off for now, prescaler 1:2, postscaler 1:1
+
+    // Clear TMR2IF (bit 1 of PIR4)
+    PIR4 &= ~(1 << 1);
+
+    // -----------------------------
+    // CCP1 uses Timer2 for PWM
+    // C1TSEL = 01 => TMR2
+    // -----------------------------
+    CCPTMRS0bits.C1TSEL = 0b01;
+
+    //ccp1 enabled, left aligned, pwm mode
+
+    CCP1CON = 0x9F;
+
+    // uncomment duty selection
+    ccp1_set_duty(DUTY_50_PERCENT);   // 50%
+    //ccp1_set_duty(DUTY_25_PERCENT); // 25%
+    //ccp1_set_duty(DUTY_0_PERCENT);  // 0%
+    
+    // Start Timer2
+    T2CON |= (1 << 7);
+
+    // Wait for Timer2 overflow flag before commence
+    while((PIR4 & (1 << 1)) == 0)
+    {
+        ;
+    }
+
+    // Enable RC4 output driver by clearing TRISC4
+    TRISC &= ~(1 << 4);
+
+    while(1)
+    {
+        ;
+    }
+    }
